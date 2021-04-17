@@ -14,33 +14,49 @@ def init():
 def process_background(cur_img,fore_img,Iback,Ibackmask,count):
     tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
-    Idiff=abs(cur_img[tx,ty]-fore_img[tx,ty])
-    if Idiff==0 and Iback[tx,ty]==0:
+    c=cur_img[tx,ty]-fore_img[tx,ty]
+    if (c > 10000):
+        c = 18446744073709551615 - c
+    Idiff=abs(c)
+    if Idiff==0 and Iback[tx,ty][0]==0:
         Ibackmask[tx,ty]=1
-    if Iback[tx,ty]==0 and Ibackmask[tx,ty]==1:
         Iback[tx,ty]=cur_img[tx,ty]
-        count=count-1
+    if Iback[tx,ty][0]==0:
+        count[0]=count[0]+1
 
 @cuda.jit
-def porcess_background2(Iback,count):
-    rows, cols = Iback.shape
+def porcess_background2(img,Iback,count):
+    rows, cols = img.shape
     tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
-    if Iback[tx,ty]==0:
+    if Iback[tx,ty][0]==0:
         value=0
         sum = 9
         for i in range(-1,2):
             for j in range(-1,2):
-                if Iback[tx+i,ty+j]==0:
+                col=tx+i
+                if col < 0:
+                    col = 0
+                if col > cols:
+                    col = cols - 1
+                row=ty+j
+                if row < 0:
+                    row = 0
+                if row > rows:
+                    row = rows - 1
+                if Iback[col,row][0]==0:
                     sum=sum-1
                 else:
-                    value=value+Iback[tx+i,ty+j]
-        value=int(value/sum)
-        Iback[tx,ty]=value
+                    value=value+Iback[col,row][0]
+        if sum!=0:
+            value=int(value/sum)
+        if value==0:
+            count[1]=count[1]+1
+        Iback[tx,ty][0]=value
 
 @cuda.jit
-def process_FirstFrame(rng_states,img,samples,dc_xoff,dc_yoff):
-    rows, cols = img.shape
+def process_FirstFrame(rng_states,rcimg,img,samples,dc_xoff,dc_yoff):
+    rows, cols = rcimg.shape
     tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
     thread_id = cuda.grid(1)
@@ -58,7 +74,7 @@ def process_FirstFrame(rng_states,img,samples,dc_xoff,dc_yoff):
         row=rows-1
     #print(a)
     for i in range(0, 20):
-        (samples[i])[col,row]=img[tx,ty]
+        (samples[i])[col,row]=img[tx,ty][0]
 
 @cuda.jit
 def process_test(rng_states,img,samples,foregroundMatchCount,mask,dc_xoff,dc_yoff):
@@ -135,6 +151,15 @@ if __name__ == "__main__":
     d_foregroundMatchCount=None
     d_mask=None
 
+    count=np.zeros(2)
+    count[0]=3840*2160
+    count[1]=10
+    d_count=cuda.to_device(count)
+    thread1=count[0]/500
+
+
+    ifdone=0
+
     while cap.isOpened():
         # get a frame
         rval, frame = cap.read()
@@ -148,17 +173,25 @@ if __name__ == "__main__":
             gray_norm=np.zeros_like(gray)
             cv2.normalize(gray,gray_norm,0,255,cv2.NORM_MINMAX,cv2.CV_8U)
             #gamma
+
             fI=gray/255.0
-            gamma=0.4
+            fI = float(1.5)*fI
+            fI[fI>1]=1
+            gamma=2.4
             gray_gamma=np.power(fI,gamma)
-            #cv2.normalize(gray_gamma, gray_gamma, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            gray_gamma=gray_gamma*255.0
+            cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\gray\\gray_gmma.jpg",gray_gamma)
+            cv2.normalize(gray_gamma, gray_gamma, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            gray_gamma = gray_gamma.astype(np.uint8)
             dImg = cuda.to_device(gray)
             start = time.time()
             #        rclasses, rscores, rbboxes=process_image(frame) #换成自己调用的函数
 
             # clean_image_tensor = process_image(data_hazy)  # 换成自己调用的函数
-            if num==0:
+            '''if num==0:
                 ave_img=gray.astype(np.float32)
+                gray_final = dImg.copy_to_host()
+                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\gray\\gray_final.jpg", gray_final)
             elif num<19:
                 temp_img=gray.astype(np.float32)
                 ave_img=ave_img+temp_img
@@ -170,7 +203,8 @@ if __name__ == "__main__":
 
                 cv2.imshow("backimg",ave_img)
                 dImg=cuda.to_device(ave_img)
-
+            
+                origin first frame
                 img_zeros = np.zeros([rows, cols, 1], np.uint8)
                 img_zeros[:, :, 0] = np.zeros([rows, cols])
                 d_mask = cuda.to_device(img_zeros)
@@ -187,10 +221,86 @@ if __name__ == "__main__":
                 cuda.synchronize()
                 process_FirstFrame[blockspergrid, threadsperblock](rng_states,dImg,d_samples,dc_xoff,dc_yoff)
                 h_samples=d_samples.copy_to_host()
-                '''for i in range(0, 20):
+                samples
+                for i in range(0, 20):
                     cv2.imshow("sample"+str(i),h_samples[i])
                     #cv2.imwrite("sample" + str(i) + ".jpg", h_samples[i], [int(cv2.IMWRITE_JPEG_QUALITY), 95])'''
+                #cuda.synchronize()
+            if num==0:
+                fore_frame=dImg.copy_to_host()
+                img_zeros = np.zeros([rows, cols, 1], np.uint8)
+                img_zeros[:, :, 0] = np.zeros([rows, cols])
+                d_Iback = cuda.to_device(img_zeros)
+                d_Ibackmask = cuda.to_device(img_zeros)
+                threadsperblock = (16, 16)
+                blockspergrid_x = int(math.ceil(rows / threadsperblock[0]))
+                blockspergrid_y = int(math.ceil(cols / threadsperblock[1]))
+                blockspergrid = (blockspergrid_x, blockspergrid_y)
+
+                fore = dImg.copy_to_host()
+                # cv2.imwrite("fore.jpg",fore)
+                cv2.imshow("fore", fore)
+
+            elif num!=0 and count[0]>thread1:
+                count[0]=0
+                d_count=cuda.to_device(count)
+                cur_frame=dImg.copy_to_host()
+                d_foreframe=cuda.to_device(fore_frame)
+                d_curframe=cuda.to_device(cur_frame)
                 cuda.synchronize()
+                process_background[blockspergrid, threadsperblock](d_curframe,d_foreframe,d_Iback,d_Ibackmask,d_count)
+                cuda.synchronize()
+                count=d_count.copy_to_host()
+                print("count: ")
+                print(count)
+                print("processing background111111111")
+                d_foreframe=cuda.to_device(cur_frame)
+
+                Iback=d_Iback.copy_to_host()
+                cv2.imshow("Iback",Iback)
+
+                fore = dImg.copy_to_host()
+                # cv2.imwrite("fore.jpg",fore)
+                cv2.imshow("fore", fore)
+
+            elif count[0]<=thread1 and count[1]!=0:
+                count[1]=0
+                d_count=cuda.to_device(count)
+                cuda.synchronize()
+                porcess_background2[blockspergrid, threadsperblock](dImg,d_Iback,d_count)
+                cuda.synchronize()
+                count=d_count.copy_to_host()
+
+                Iback = d_Iback.copy_to_host()
+                cv2.imshow("Iback", Iback)
+
+                print("count: ")
+                print(count)
+                print("processing background2222222222")
+                cuda.synchronize()
+                if count[1]==0:
+                    img_zeros = np.zeros([rows, cols, 1], np.uint8)
+                    img_zeros[:, :, 0] = np.zeros([rows, cols])
+                    d_mask = cuda.to_device(img_zeros)
+                    d_foregroundMatchCount = cuda.to_device(img_zeros)
+                    h_samples = []
+
+                    for i in range(0, 20):
+                        h_samples.append(Iback)
+                    d_samples = cuda.to_device(h_samples)
+                    rng_states = create_xoroshiro128p_states(64 * blockspergrid_x * blockspergrid_y, seed=1)
+                    cuda.synchronize()
+                    process_FirstFrame[blockspergrid, threadsperblock](rng_states, dImg, d_Iback, d_samples, dc_xoff, dc_yoff)
+                    h_samples = d_samples.copy_to_host()
+                    cuda.synchronize()
+
+
+
+                fore = dImg.copy_to_host()
+                # cv2.imwrite("fore.jpg",fore)
+                cv2.imshow("fore", fore)
+
+
             else:
                 cuda.synchronize()
                 fore=dImg.copy_to_host()
@@ -203,8 +313,8 @@ if __name__ == "__main__":
                 mask=cv2.morphologyEx(mask,cv2.MORPH_OPEN,kernel)
                 mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,kernel)'''
                 cv2.imshow("mask", mask)
-                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\fore\\fore" + str(num) + ".jpg", fore)
-                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".jpg", mask)
+                #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\fore\\fore" + str(num) + ".jpg", fore)
+                #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".jpg", mask)
             # End time
             end = time.time()
             # Time elapsed
