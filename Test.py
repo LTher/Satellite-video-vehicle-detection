@@ -195,6 +195,81 @@ def process_test_for_light(rng_states,img,samples,foregroundMatchCount,mask,dc_x
                     (samples[random])[tx, ty] = img[tx, ty]
 
 @cuda.jit
+def process_test_for_noise(rng_states,img,samples,foregroundMatchCount,mask,dc_xoff,dc_yoff,frame_count,continuous_img,result):
+    thread_id = cuda.grid(1)
+    rows, cols = img.shape
+    tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    num_samples=20
+    min_matches=10
+    radius=30
+    subsample_factor=16
+    matches=0
+    count=0
+    dyn=255
+    if (tx<cols and ty<rows):
+        while (matches < min_matches and count < num_samples):
+            a = (samples[count])[tx, ty][0]
+            b = img[tx, ty]
+            c = b-a
+            if(c>10000):
+                c=18446744073709551615-c
+            dist = abs(c)
+            if dist<dyn:
+                dyn=dist
+            #print(dist)
+            if (dist < radius):
+                matches = matches + 1
+            count=count+1
+        frame_count[1]=frame_count[1]+dyn
+        if matches >= min_matches:
+            #a=(samples[20])[tx, ty][0]
+            #print(a)
+            #foregroundMatchCount[tx, ty] = 0
+            mask[tx, ty] = 0
+            random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * subsample_factor%subsample_factor)
+            if random == 0:
+                random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * num_samples%num_samples)
+                (samples[random])[tx, ty] = img[tx, ty]
+            random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * subsample_factor%subsample_factor)
+            if random == 0:
+                random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * 9)
+                col = tx + dc_xoff[random]
+                if col < 0:
+                    col = 0
+                if col > cols:
+                    col = cols - 1
+                row = ty + dc_yoff[random]
+                if row < 0:
+                    row = 0
+                if row > rows:
+                    row = rows - 1
+                random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * num_samples%num_samples)
+                (samples[random])[col, row] = img[tx, ty]
+        else:
+            foregroundMatchCount[tx, ty][0] = foregroundMatchCount[tx, ty][0] + 1
+            d_fore_count=frame_count[0]-foregroundMatchCount[tx, ty][0]
+            thread=frame_count[0]*0.7
+            #print(d_fore_count)
+            if frame_count[0]>5 and d_fore_count < thread:
+                mask[tx, ty] = 0
+                random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * subsample_factor%subsample_factor)
+                if random == 0:
+                    random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * num_samples%num_samples)
+                    (samples[random])[tx, ty] = img[tx, ty]
+            else:
+                mask[tx, ty] = 255
+                result[tx, ty][0] = 0
+                result[tx, ty][1] = 0
+                result[tx, ty][2] = 255
+            '''if continuous_img[tx, ty][0]==0:
+                mask[tx, ty] = 0
+                random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * subsample_factor % subsample_factor)
+                if random == 0:
+                    random = int(xoroshiro128p_uniform_float32(rng_states, thread_id) * num_samples % num_samples)
+                    (samples[random])[tx, ty] = img[tx, ty]'''
+
+@cuda.jit
 def process_result(src_img,mask,result):
     tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
@@ -229,8 +304,9 @@ if __name__ == "__main__":
     d_count=cuda.to_device(count)
     thread1=count[0]/500
 
-    frame_count = np.zeros(2)
+    frame_count = np.zeros(3)
     frame_count[0] = 0
+    frame_count[2]=3
     d_frame_count = cuda.to_device(frame_count)
 
     ifdone=0
@@ -259,6 +335,10 @@ if __name__ == "__main__":
             cv2.normalize(gray_gamma, gray_gamma, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
             gray_gamma = gray_gamma.astype(np.uint8)
             dImg = cuda.to_device(gray)
+
+            src_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            d_result = cuda.to_device(src_img)
+
             start = time.time()
             #        rclasses, rscores, rbboxes=process_image(frame) #换成自己调用的函数
 
@@ -311,6 +391,11 @@ if __name__ == "__main__":
                 blockspergrid_x = int(math.ceil(rows / threadsperblock[0]))
                 blockspergrid_y = int(math.ceil(cols / threadsperblock[1]))
                 blockspergrid = (blockspergrid_x, blockspergrid_y)
+
+                continuous_img=np.zeros([rows, cols, 1], np.uint8)
+                continuous_img[:, :, 0] = np.ones([rows, cols])*255
+                d_continuous_img=cuda.to_device(continuous_img)
+                cv2.imshow("continous",continuous_img)
 
                 fore = dImg.copy_to_host()
                 # cv2.imwrite("fore.jpg",fore)
@@ -365,7 +450,10 @@ if __name__ == "__main__":
                     d_samples = cuda.to_device(h_samples)
                     rng_states = create_xoroshiro128p_states(64 * blockspergrid_x * blockspergrid_y, seed=1)
                     cuda.synchronize()
+                    #d_Iback
                     process_FirstFrame[blockspergrid, threadsperblock](rng_states, dImg, d_Iback, d_samples, dc_xoff, dc_yoff)
+                    #src
+                    #process_FirstFrame[blockspergrid, threadsperblock](rng_states, dImg, dImg, d_samples, dc_xoff, dc_yoff)
                     h_samples = d_samples.copy_to_host()
                     cuda.synchronize()
 
@@ -380,30 +468,38 @@ if __name__ == "__main__":
                 cuda.synchronize()
                 fore=dImg.copy_to_host()
                 #cv2.imwrite("fore.jpg",fore)
-                cv2.imshow("fore",fore)
+                cv2.imshow("fore",gray)
 
                 #process_test[blockspergrid, threadsperblock](rng_states, dImg, d_samples, d_foregroundMatchCount, d_mask, dc_xoff, dc_yoff)
                 frame_count=d_frame_count.copy_to_host()
                 frame_count[0]=frame_count[0]+1
                 d_frame_count=cuda.to_device(frame_count)
-                process_test_for_light[blockspergrid, threadsperblock](rng_states, dImg, d_samples, d_foregroundMatchCount, d_mask, dc_xoff, dc_yoff,d_frame_count)
+                #process_test_for_light[blockspergrid, threadsperblock](rng_states, dImg, d_samples, d_foregroundMatchCount, d_mask, dc_xoff, dc_yoff,d_frame_count)
+                process_test_for_noise[blockspergrid, threadsperblock](rng_states, dImg, d_samples, d_foregroundMatchCount, d_mask, dc_xoff, dc_yoff, d_frame_count,d_continuous_img,d_result)
                 cuda.synchronize()
                 mask=d_mask.copy_to_host()
                 '''kernel = cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3))
                 mask=cv2.morphologyEx(mask,cv2.MORPH_OPEN,kernel)
                 mask=cv2.morphologyEx(mask,cv2.MORPH_CLOSE,kernel)'''
+
                 cv2.imshow("mask", mask)
+
                 #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\fore\\fore" + str(num) + ".jpg", fore)
                 #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".jpg", mask)
+                result = d_result.copy_to_host()
+                cv2.imshow("result", result)
 
-                src_img=cv2.cvtColor(gray,cv2.COLOR_GRAY2BGR)
+                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".bmp", mask)
+                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\result" + str(num) + ".bmp", result)
+
+                '''src_img=cv2.cvtColor(gray,cv2.COLOR_GRAY2BGR)
                 cuda.synchronize()
                 d_result=cuda.to_device(src_img)
                 d_src=cuda.to_device(src_img)
                 process_result[blockspergrid, threadsperblock](d_src,d_mask,d_result)
                 cuda.synchronize()
                 result=d_result.copy_to_host()
-                cv2.imshow("result",result)
+                cv2.imshow("result",result)'''
             # End time
             end = time.time()
             # Time elapsed
