@@ -201,7 +201,7 @@ def process_test_for_noise(rng_states,img,samples,foregroundMatchCount,mask,dc_x
     tx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
     ty = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
     num_samples=20
-    min_matches=10
+    min_matches=3
     radius=30
     subsample_factor=16
     matches=0
@@ -306,7 +306,7 @@ if __name__ == "__main__":
 
     frame_count = np.zeros(3)
     frame_count[0] = 0
-    frame_count[2]=3
+    frame_count[2]=7
     d_frame_count = cuda.to_device(frame_count)
 
     ifdone=0
@@ -331,14 +331,14 @@ if __name__ == "__main__":
             gamma=2.4
             gray_gamma=np.power(fI,gamma)
             gray_gamma=gray_gamma*255.0
-            cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\gray\\gray_gmma.jpg",gray_gamma)
+            #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\gray\\gray_gmma.jpg",gray_gamma)
             cv2.normalize(gray_gamma, gray_gamma, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
             gray_gamma = gray_gamma.astype(np.uint8)
             dImg = cuda.to_device(gray)
 
             src_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-            d_result = cuda.to_device(src_img)
-
+            #d_result = cuda.to_device(src_img)
+            d_result = cuda.to_device(frame)
             start = time.time()
             #        rclasses, rscores, rbboxes=process_image(frame) #换成自己调用的函数
 
@@ -486,11 +486,12 @@ if __name__ == "__main__":
 
                 #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\fore\\fore" + str(num) + ".jpg", fore)
                 #cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".jpg", mask)
-                result = d_result.copy_to_host()
+                '''result = d_result.copy_to_host()
                 cv2.imshow("result", result)
 
                 cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\mask" + str(num) + ".bmp", mask)
                 cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\result" + str(num) + ".bmp", result)
+                cv2.imwrite("D:\\PyProjects\\ViBe_CUDA\\mask\\frame" + str(num) + ".bmp", frame)'''
 
                 '''src_img=cv2.cvtColor(gray,cv2.COLOR_GRAY2BGR)
                 cuda.synchronize()
